@@ -104,20 +104,33 @@ Content-Type: application/json
 {
   "items": [
     {
+      "senderName": "Jane Doe",
+      "senderEmail": "jane@acme.com",
       "subject": "Partnership proposal",
-      "sender": "jane@acme.com",
-      "receivedAt": "2026-04-09T10:30:00Z",
-      "snippet": "First 200 chars of the email body...",
       "summary": "Jane from Acme wants to discuss a partnership.",
       "context": "Acme is a portfolio company, Jane is the CEO.",
       "recommendedAction": "reply",
       "draftResponse": "Hi Jane, thanks for reaching out...",
       "priority": 1,
-      "labels": ["partnership", "portfolio"]
+      "threadId": "optional-gmail-thread-id",
+      "messageId": "optional-gmail-message-id",
+      "gmailThreadUrl": "https://mail.google.com/...",
+      "receivedAt": 1744300800000,
+      "triageModel": "optional-model-name",
+      "triageRunId": "optional-run-id"
     }
-  ]
+  ],
+  "triageSummary": "Processed 18 emails, 4 require action."
 }
 ```
+
+Notes:
+- All fields are camelCase
+- `receivedAt` is a Unix timestamp in milliseconds (not an ISO string)
+- All item fields are optional; the caller decides how much to send
+- `senderEmail` drives contact/company resolution — include it when you can
+- `recommendedAction` must be one of: `reply`, `archive`, `follow_up`, `delegate`, `flag`, `review`
+- Response: `{"success": true, "created": N}`
 
 **What to ask the user:**
 - "Do you use Gmail? What Google Workspace account?"

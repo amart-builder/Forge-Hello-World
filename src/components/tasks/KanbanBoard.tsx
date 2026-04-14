@@ -226,8 +226,11 @@ export default function KanbanBoard({
     );
   }
 
-  // Empty state — no columns at all
-  if (columns.length === 0) {
+  // Empty state — no columns at all.
+  // When addingColumn is true, fall through to the main render so the inline
+  // add-column form appears. Otherwise the Add column button would be dead
+  // (setting addingColumn=true would just re-render this same empty state).
+  if (columns.length === 0 && !addingColumn) {
     return (
       <EmptyState
         title="No columns yet"

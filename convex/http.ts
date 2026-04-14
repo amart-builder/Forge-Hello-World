@@ -1,7 +1,8 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server";
+import { internal } from "./_generated/api";
 import { auth } from "./auth";
+import type { Id } from "./_generated/dataModel";
 
 const http = httpRouter();
 
@@ -28,9 +29,31 @@ function errorResponse(message: string, status: number, cors = false) {
   return jsonResponse({ error: message }, status, cors);
 }
 
-function checkAuth(request: any): boolean {
+/**
+ * Validate a Bearer token against FORGE_API_SECRET.
+ *
+ * Returns true iff:
+ *  - Authorization header is present and starts with "Bearer "
+ *  - FORGE_API_SECRET env var is configured (fail-closed if not)
+ *  - The provided token matches the secret exactly (constant-time compare)
+ */
+function checkAuth(request: Request): boolean {
   const authHeader = request.headers.get("Authorization");
-  return Boolean(authHeader?.startsWith("Bearer "));
+  if (!authHeader || !authHeader.startsWith("Bearer ")) return false;
+
+  const token = authHeader.slice("Bearer ".length).trim();
+  if (!token) return false;
+
+  const secret = process.env.FORGE_API_SECRET;
+  if (!secret) return false; // fail-closed: no secret configured = reject all
+
+  // Constant-time comparison to avoid timing attacks
+  if (token.length !== secret.length) return false;
+  let diff = 0;
+  for (let i = 0; i < token.length; i++) {
+    diff |= token.charCodeAt(i) ^ secret.charCodeAt(i);
+  }
+  return diff === 0;
 }
 
 // ── Free email providers (don't create companies for these) ──
@@ -69,7 +92,6 @@ const corsPreflightHandler = httpAction(async () => {
   });
 });
 
-// Register OPTIONS for all API routes
 const apiPaths = [
   "/api/triage",
   "/api/query",
@@ -85,13 +107,30 @@ for (const path of apiPaths) {
 
 // ── POST /api/triage ────────────────────────────────────
 
+interface TriageItem {
+  threadId?: string;
+  messageId?: string;
+  senderName?: string;
+  senderEmail?: string;
+  subject?: string;
+  summary?: string;
+  context?: string;
+  recommendedAction?: string;
+  draftResponse?: string;
+  priority?: number;
+  gmailThreadUrl?: string;
+  receivedAt?: number;
+  triageModel?: string;
+  triageRunId?: string;
+}
+
 http.route({
   path: "/api/triage",
   method: "POST",
-  handler: httpAction(async (ctx: any, request: any) => {
+  handler: httpAction(async (ctx, request) => {
     if (!checkAuth(request)) return errorResponse("Unauthorized", 401);
 
-    let body: any;
+    let body: { items?: TriageItem[]; triageSummary?: string };
     try {
       body = await request.json();
     } catch {
@@ -105,18 +144,15 @@ http.route({
     let created = 0;
 
     for (const item of body.items) {
-      let contactId: string | undefined;
-      let companyId: string | undefined;
+      let contactId: Id<"contacts"> | undefined;
+      let companyId: Id<"companies"> | undefined;
       let autoCreatedContact = false;
       let autoCreatedCompany = false;
 
       if (item.senderEmail) {
         const existingContact = await ctx.runQuery(
-          (ctx2: any) =>
-            ctx2.db
-              .query("contacts")
-              .withIndex("by_email", (q: any) => q.eq("email", item.senderEmail))
-              .first()
+          internal.httpHelpers.getContactByEmail,
+          { email: item.senderEmail }
         );
 
         if (existingContact) {
@@ -126,101 +162,61 @@ http.route({
           const domain = extractDomain(item.senderEmail);
           if (domain && !FREE_EMAIL_PROVIDERS.has(domain)) {
             const existingCompany = await ctx.runQuery(
-              (ctx2: any) =>
-                ctx2.db
-                  .query("companies")
-                  .withIndex("by_domain", (q: any) => q.eq("domain", domain))
-                  .first()
+              internal.httpHelpers.getCompanyByDomain,
+              { domain }
             );
 
             if (existingCompany) {
               companyId = existingCompany._id;
             } else {
-              const now = Date.now();
               companyId = await ctx.runMutation(
-                (ctx2: any) =>
-                  ctx2.db.insert("companies", {
-                    name: domain.split(".")[0].replace(/^\w/, (c: string) => c.toUpperCase()),
-                    domain,
-                    tags: [],
-                    notes: "",
-                    sourceSystem: "email",
-                    createdAt: now,
-                    updatedAt: now,
-                  })
+                internal.httpHelpers.createCompanyFromTriage,
+                { domain }
               );
               autoCreatedCompany = true;
             }
           }
 
-          const now = Date.now();
           contactId = await ctx.runMutation(
-            (ctx2: any) =>
-              ctx2.db.insert("contacts", {
-                name: item.senderName || item.senderEmail,
-                email: item.senderEmail,
-                tier: "untiered",
-                tags: [],
-                notes: "",
-                primaryCompanyId: companyId,
-                sourceSystem: "email",
-                createdAt: now,
-                updatedAt: now,
-              })
+            internal.httpHelpers.createContactFromTriage,
+            {
+              name: item.senderName || item.senderEmail,
+              email: item.senderEmail,
+              primaryCompanyId: companyId,
+            }
           );
           autoCreatedContact = true;
         }
       }
 
-      await ctx.runMutation(
-        (ctx2: any) =>
-          ctx2.db.insert("emailItems", {
-            threadId: item.threadId,
-            messageId: item.messageId,
-            senderName: item.senderName,
-            senderEmail: item.senderEmail,
-            subject: item.subject,
-            summary: item.summary,
-            context: item.context,
-            recommendedAction: item.recommendedAction ?? "review",
-            draftResponse: item.draftResponse,
-            priority: item.priority ?? 3,
-            status: "pending",
-            contactId,
-            companyId,
-            triageSource: "cron",
-            gmailThreadUrl: item.gmailThreadUrl,
-            receivedAt: item.receivedAt,
-            lastSyncedAt: Date.now(),
-            autoCreatedContact,
-            autoCreatedCompany,
-            triageModel: item.triageModel,
-            triageRunId: item.triageRunId,
-            createdAt: Date.now(),
-          })
-      );
+      await ctx.runMutation(internal.httpHelpers.createEmailItem, {
+        threadId: item.threadId,
+        messageId: item.messageId,
+        senderName: item.senderName,
+        senderEmail: item.senderEmail,
+        subject: item.subject,
+        summary: item.summary,
+        context: item.context,
+        recommendedAction: item.recommendedAction,
+        draftResponse: item.draftResponse,
+        priority: item.priority,
+        contactId,
+        companyId,
+        gmailThreadUrl: item.gmailThreadUrl,
+        receivedAt: item.receivedAt,
+        autoCreatedContact,
+        autoCreatedCompany,
+        triageModel: item.triageModel,
+        triageRunId: item.triageRunId,
+      });
       created++;
     }
 
     if (body.triageSummary) {
-      const now = Date.now();
-      const existing = await ctx.runQuery(
-        (ctx2: any) =>
-          ctx2.db
-            .query("appState")
-            .withIndex("by_key", (q: any) => q.eq("key", "triage_summary"))
-            .first()
-      );
-      if (existing) {
-        await ctx.runMutation(
-          (ctx2: any) => ctx2.db.patch(existing._id, { value: body.triageSummary, updatedAt: now })
-        );
-      } else {
-        await ctx.runMutation(
-          (ctx2: any) =>
-            ctx2.db.insert("appState", { key: "triage_summary", value: body.triageSummary, updatedAt: now })
-        );
-      }
+      await ctx.runMutation(internal.httpHelpers.setAppState, {
+        key: "triage_summary",
+        value: body.triageSummary,
+      });
     }
 
     return jsonResponse({ success: true, created });
@@ -232,8 +228,8 @@ http.route({
 http.route({
   path: "/api/query",
   method: "POST",
-  handler: httpAction(async (_ctx: any, request: any) => {
-    let body: any;
+  handler: httpAction(async (_ctx, request) => {
+    let body: { query?: string };
     try {
       body = await request.json();
     } catch {
@@ -257,13 +253,28 @@ http.route({
 
 // ── POST /api/contacts — create contact from external agent ──
 
+interface AgentContactBody {
+  name?: string;
+  email?: string;
+  phone?: string;
+  company?: string;
+  role?: string;
+  linkedin?: string;
+  location?: string;
+  tier?: string;
+  tags?: string[];
+  howWeMet?: string;
+  how_we_met?: string;
+  notes?: string;
+}
+
 http.route({
   path: "/api/contacts",
   method: "POST",
-  handler: httpAction(async (ctx: any, request: any) => {
+  handler: httpAction(async (ctx, request) => {
     if (!checkAuth(request)) return errorResponse("Unauthorized", 401);
 
-    let body: any;
+    let body: AgentContactBody;
     try {
       body = await request.json();
     } catch {
@@ -274,25 +285,21 @@ http.route({
       return errorResponse("Missing or invalid 'name' string", 400);
     }
 
-    const now = Date.now();
     const id = await ctx.runMutation(
-      (ctx2: any) =>
-        ctx2.db.insert("contacts", {
-          name: body.name,
-          email: body.email ?? undefined,
-          phone: body.phone ?? undefined,
-          company: body.company ?? undefined,
-          role: body.role ?? undefined,
-          linkedin: body.linkedin ?? undefined,
-          location: body.location ?? undefined,
-          tier: body.tier ?? "C",
-          tags: body.tags ?? [],
-          howWeMet: body.how_we_met ?? body.howWeMet ?? undefined,
-          notes: body.notes ?? "",
-          sourceSystem: "manual",
-          createdAt: now,
-          updatedAt: now,
-        })
+      internal.httpHelpers.createContactFromAgent,
+      {
+        name: body.name,
+        email: body.email,
+        phone: body.phone,
+        company: body.company,
+        role: body.role,
+        linkedin: body.linkedin,
+        location: body.location,
+        tier: body.tier,
+        tags: body.tags,
+        howWeMet: body.how_we_met ?? body.howWeMet,
+        notes: body.notes,
+      }
     );
 
     return jsonResponse({ success: true, id });
@@ -301,13 +308,25 @@ http.route({
 
 // ── POST /api/companies — create company from external agent ──
 
+interface AgentCompanyBody {
+  name?: string;
+  domain?: string;
+  website?: string;
+  linkedin?: string;
+  industry?: string;
+  description?: string;
+  location?: string;
+  tags?: string[];
+  notes?: string;
+}
+
 http.route({
   path: "/api/companies",
   method: "POST",
-  handler: httpAction(async (ctx: any, request: any) => {
+  handler: httpAction(async (ctx, request) => {
     if (!checkAuth(request)) return errorResponse("Unauthorized", 401);
 
-    let body: any;
+    let body: AgentCompanyBody;
     try {
       body = await request.json();
     } catch {
@@ -318,23 +337,19 @@ http.route({
       return errorResponse("Missing or invalid 'name' string", 400);
     }
 
-    const now = Date.now();
     const id = await ctx.runMutation(
-      (ctx2: any) =>
-        ctx2.db.insert("companies", {
-          name: body.name,
-          domain: body.domain ?? undefined,
-          website: body.website ?? undefined,
-          linkedin: body.linkedin ?? undefined,
-          industry: body.industry ?? undefined,
-          description: body.description ?? undefined,
-          location: body.location ?? undefined,
-          tags: body.tags ?? [],
-          notes: body.notes ?? "",
-          sourceSystem: "manual",
-          createdAt: now,
-          updatedAt: now,
-        })
+      internal.httpHelpers.createCompanyFromAgent,
+      {
+        name: body.name,
+        domain: body.domain,
+        website: body.website,
+        linkedin: body.linkedin,
+        industry: body.industry,
+        description: body.description,
+        location: body.location,
+        tags: body.tags,
+        notes: body.notes,
+      }
     );
 
     return jsonResponse({ success: true, id });
@@ -346,12 +361,10 @@ http.route({
 http.route({
   path: "/api/status",
   method: "GET",
-  handler: httpAction(async (ctx: any, request: any) => {
+  handler: httpAction(async (ctx, request) => {
     if (!checkAuth(request)) return errorResponse("Unauthorized", 401);
 
-    const allState = await ctx.runQuery(
-      (ctx2: any) => ctx2.db.query("appState").collect()
-    );
+    const allState = await ctx.runQuery(internal.httpHelpers.getAllAppState, {});
 
     const stateMap: Record<string, string | null> = {};
     for (const entry of allState) {
@@ -367,10 +380,10 @@ http.route({
 http.route({
   path: "/api/enrich",
   method: "POST",
-  handler: httpAction(async (_ctx: any, request: any) => {
+  handler: httpAction(async (_ctx, request) => {
     if (!checkAuth(request)) return errorResponse("Unauthorized", 401);
 
-    let body: any;
+    let body: { contactId?: string; companyId?: string };
     try {
       body = await request.json();
     } catch {
@@ -378,7 +391,8 @@ http.route({
     }
 
     return jsonResponse({
-      result: "Enrichment is a stub. Connect an enrichment provider (e.g. Clearbit, Apollo) to enable contact/company enrichment.",
+      result:
+        "Enrichment is a stub. Connect an enrichment provider (e.g. Clearbit, Apollo) to enable contact/company enrichment.",
       contactId: body.contactId ?? null,
       companyId: body.companyId ?? null,
       enriched: false,
@@ -391,64 +405,44 @@ http.route({
 http.route({
   path: "/api/morning-brief",
   method: "GET",
-  handler: httpAction(async (ctx: any, request: any) => {
+  handler: httpAction(async (ctx, request) => {
     if (!checkAuth(request)) return errorResponse("Unauthorized", 401);
 
-    // Gather counts
-    const pendingEmails = await ctx.runQuery(
-      (ctx2: any) =>
-        ctx2.db
-          .query("emailItems")
-          .withIndex("by_status", (q: any) => q.eq("status", "pending"))
-          .collect()
+    const data = await ctx.runQuery(
+      internal.httpHelpers.getMorningBriefData,
+      {}
     );
 
-    const highPriorityPending = pendingEmails.filter(
-      (e: any) => e.priority <= 2
+    const highPriorityPending = data.pendingEmails.filter(
+      (e: { priority: number }) => e.priority <= 2
     );
 
-    // Stale contacts: no interaction in last 30 days
     const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
-    const allContacts = await ctx.runQuery(
-      (ctx2: any) => ctx2.db.query("contacts").collect()
-    );
-    const staleContacts = allContacts.filter(
-      (c: any) =>
-        !c.lastInteractionAt || c.lastInteractionAt < thirtyDaysAgo
+    const staleContacts = data.contacts.filter(
+      (c: { lastInteractionAt: number | null }) =>
+        c.lastInteractionAt === null || c.lastInteractionAt < thirtyDaysAgo
     );
 
-    // Pipeline stats
-    const allPipelines = await ctx.runQuery(
-      (ctx2: any) => ctx2.db.query("pipelines").collect()
-    );
-    const allEntries = await ctx.runQuery(
-      (ctx2: any) => ctx2.db.query("pipelineEntries").collect()
-    );
-    const pipelineStats = allPipelines.map((p: any) => ({
-      id: p._id,
-      name: p.name,
-      totalEntries: allEntries.filter((e: any) => e.pipelineId === p._id).length,
-    }));
-
-    // Triage summary from appState
-    const triageSummary = await ctx.runQuery(
-      (ctx2: any) =>
-        ctx2.db
-          .query("appState")
-          .withIndex("by_key", (q: any) => q.eq("key", "triage_summary"))
-          .first()
+    const pipelineStats = data.pipelines.map(
+      (p: { _id: string; name: string }) => ({
+        id: p._id,
+        name: p.name,
+        totalEntries: data.entries.filter(
+          (e: { pipelineId: string }) => e.pipelineId === p._id
+        ).length,
+      })
     );
 
     return jsonResponse({
       generatedAt: new Date().toISOString(),
       counts: {
-        pendingEmails: pendingEmails.length,
+        pendingEmails: data.pendingEmails.length,
         highPriorityPending: highPriorityPending.length,
-        totalContacts: allContacts.length,
+        totalContacts: data.contacts.length,
         staleContacts: staleContacts.length,
       },
       pipelineStats,
-      triageSummary: triageSummary?.value ?? null,
+      triageSummary: data.triageSummary,
       recommendations: [
         highPriorityPending.length > 0
           ? `You have ${highPriorityPending.length} high-priority email${highPriorityPending.length !== 1 ? "s" : ""} awaiting action.`

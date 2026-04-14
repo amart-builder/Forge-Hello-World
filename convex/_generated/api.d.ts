@@ -17,6 +17,7 @@ import type * as contacts from "../contacts.js";
 import type * as emailActions from "../emailActions.js";
 import type * as emails from "../emails.js";
 import type * as http from "../http.js";
+import type * as httpHelpers from "../httpHelpers.js";
 import type * as importerDedupe from "../importerDedupe.js";
 import type * as importerTypes from "../importerTypes.js";
 import type * as importers from "../importers.js";
@@ -43,6 +44,7 @@ declare const fullApi: ApiFromModules<{
   emailActions: typeof emailActions;
   emails: typeof emails;
   http: typeof http;
+  httpHelpers: typeof httpHelpers;
   importerDedupe: typeof importerDedupe;
   importerTypes: typeof importerTypes;
   importers: typeof importers;
