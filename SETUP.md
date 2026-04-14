@@ -89,13 +89,23 @@ The app currently has no auth — anyone with the URL can access everything. Thi
 - "Do you want Google sign-in, or a different provider?"
 - "Should the app require login, or is it fine as-is for now?"
 
-### Step 3: Connect Email (Requires External Agent)
+### Step 3: Connect Gmail
 
-Forge's email triage UI is fully functional, but emails need to be *pushed* into Forge via the `/api/triage` endpoint. There is no built-in Gmail polling.
+**→ Full instructions: [`SETUP_GMAIL.md`](./SETUP_GMAIL.md)**
 
-**Architecture:** An external agent (OpenClaw, cron job, or Zapier) reads Gmail → classifies emails → POSTs to Forge's triage endpoint.
+That doc is written for an agent (OpenClaw, Claude, or similar) to walk the user through end-to-end Gmail ingestion: OAuth via Google Cloud Console, token storage in Convex, scheduled pulling, LLM-based classification, and end-to-end verification. It specifies the *end state* and *non-negotiable constraints* but lets the agent pick the implementation based on current tooling.
 
-**The triage endpoint expects this shape:**
+**Summary of what that setup achieves:**
+- User's Gmail messages arrive in Forge's Email tab within 5–15 minutes of receipt
+- Each email is pre-triaged (summary, priority, recommended action, draft response populated)
+- Runs unattended — no manual steps once wired up
+- Revocable — user can disconnect Gmail cleanly at any time
+
+**Architecture underneath:** A scheduled task reads Gmail via OAuth → classifies each email with an LLM → POSTs the classified items to Forge's `/api/triage` endpoint, which handles contact/company resolution and insertion. The triage endpoint is the stable interface; the ingestion path can be swapped (Gmail today, Outlook tomorrow, etc.) without touching Forge itself.
+
+**Agent guidance:** The preferred path is OpenClaw connecting directly to the user's Gmail via Google Cloud Console OAuth. Alternatives (Zapier, Make, Apps Script, custom worker) are secondary options — use them only if OpenClaw is unavailable.
+
+**For reference, the triage endpoint expects this shape:**
 ```json
 POST /api/triage
 Authorization: Bearer $FORGE_API_SECRET
@@ -133,14 +143,13 @@ Notes:
 - Response: `{"success": true, "created": N}`
 
 **What to ask the user:**
-- "Do you use Gmail? What Google Workspace account?"
+- "Which Gmail account should Forge read?"
+- "Do you already have a Google Cloud project and Gmail API credentials?"
 - "How often should emails be checked? Every 5 minutes? Every hour?"
-- "Should all emails be triaged, or only from specific senders/labels?"
+- "Should all emails be triaged, or only specific labels, inboxes, or senders?"
+- "Do you want OpenClaw to be the Gmail bridge, or do you want another tool handling ingestion?"
 
-**To implement:** This requires building a Gmail → Forge integration, likely as:
-- A scheduled OpenClaw task that reads Gmail API and calls `/api/triage`
-- Or a Google Apps Script that triggers on new emails
-- Or a Zapier/Make.com workflow
+**Implementation target:** The default should be a scheduled OpenClaw task that reads Gmail API and calls `/api/triage`.
 
 The `FORGE_API_SECRET` env var must be set in Convex for the Bearer token auth to work.
 
@@ -210,7 +219,7 @@ This can be called by an agent daily to generate a morning summary.
 
 These features are referenced in the UI or spec but not implemented:
 
-- **Gmail auto-fetch** — No polling or webhook. Emails must be pushed via `/api/triage`.
+- **Native Gmail auto-fetch inside Forge** — Not built. The intended near-term path is OpenClaw reading Gmail and pushing results into `/api/triage`.
 - **Google Calendar sync** — Meeting notes are manual CRUD. No calendar API integration.
 - **Auto-generated activity timeline** — Contact activities are manual inserts. Email/calendar events don't auto-create activities.
 - **Contact enrichment** — `/api/enrich` is a stub. Would need Clearbit, Apollo, or similar.

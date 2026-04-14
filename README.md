@@ -22,6 +22,8 @@ Forge is the operational surface for Edge Fund — tasks, email triage, and CRM 
 - Action cards with draft responses, reply/archive/follow-up/delegate actions
 - Summary card with triage statistics
 - Collapsible action log with filtering
+- Recommended real-world path: connect OpenClaw to the user's Gmail via Google Cloud Console, then have OpenClaw push triaged emails into Forge.
+- Forge itself does not poll Gmail yet. OpenClaw or another external agent handles inbox access and sends results to `/api/triage`.
 
 ### CRM
 - **Contacts:** Master list with search, tier/status/tag filters, detail panel with activity timeline, meeting notes, inline editing
@@ -51,25 +53,53 @@ Forge is the operational surface for Edge Fund — tasks, email triage, and CRM 
 
 ### Prerequisites
 - Node.js 20+
-- A Convex project (`npx convex dev` to initialize)
+- A Convex account
 
 ### Environment Variables
 
-Create `.env.local`:
+Forge uses two env layers:
+
+1. **Local Next.js env** in `.env.local`
+2. **Convex backend env** set with `npx convex env set ...`
+
+On a fresh install, `npx convex dev` provisions the dev deployment and writes these local values into `.env.local` automatically:
 
 ```
 CONVEX_DEPLOYMENT=your-convex-deployment
 NEXT_PUBLIC_CONVEX_URL=https://your-project.convex.cloud
-FORGE_API_SECRET=your-api-secret-for-http-endpoints
-NEXT_PUBLIC_ATTIO_API_KEY=your-attio-api-key  # optional, for Attio import
+NEXT_PUBLIC_CONVEX_SITE_URL=https://your-project.convex.site
+```
+
+Optional local env:
+
+```
+NEXT_PUBLIC_ATTIO_API_KEY=your-attio-api-key
+```
+
+Required Convex backend env:
+
+```bash
+npx convex env set AUTH_DOMAIN "http://localhost:3000"
+npx convex env set FORGE_API_SECRET "your-api-secret-for-http-endpoints"
 ```
 
 ### Install & Run
 
 ```bash
 npm install
-npx convex dev        # start Convex backend (separate terminal)
-npm run dev           # start Next.js dev server
+
+# First run: provisions Convex and writes .env.local
+npx convex dev
+
+# If Convex stops and says AUTH_DOMAIN is missing, set it once:
+npx convex env set AUTH_DOMAIN "http://localhost:3000"
+
+# Required for authenticated HTTP endpoints like /api/triage
+npx convex env set FORGE_API_SECRET "your-api-secret-for-http-endpoints"
+
+# Start Convex again if needed, then run the frontend in another terminal
+npx convex dev
+npm run dev
 ```
 
 ### Production Build
@@ -78,6 +108,13 @@ npm run dev           # start Next.js dev server
 npm run build
 npm start
 ```
+
+## Onboarding a User
+
+Setting up Forge as a dev environment (above) gets the app running. Turning it into a real working instance — Gmail connected, contacts imported, pipelines created, API secret configured — is covered in separate onboarding guides designed for an agent to walk the user through:
+
+- **[`SETUP.md`](./SETUP.md)** — Full onboarding guide: status of every integration, recommended setup order, what to ask the user at each step, env var reference
+- **[`SETUP_GMAIL.md`](./SETUP_GMAIL.md)** — End-state spec for Gmail ingestion (OAuth via Google Cloud Console, scheduled pulling, LLM classification, end-to-end verification). Written so the agent owns the implementation within a fixed set of constraints
 
 ## Project Structure
 
