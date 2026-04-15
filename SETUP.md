@@ -12,7 +12,7 @@ This guide walks an agent (or user) through setting up Forge for real use. It co
 
 | Feature | Status | What's Needed |
 |---------|--------|---------------|
-| Tasks (Kanban) | **Ready** | Nothing — works immediately with 3 default columns |
+| Tasks (Kanban) | **Ready** | Shows empty state on fresh install — click "Add column" to create the first one. Optional: run `npx convex run init:seed` to populate default columns (To Do / In Progress / Done). |
 | CRM (Contacts) | **Ready** | Import data (CSV or Attio) or create contacts manually |
 | CRM (Companies) | **Ready** | Auto-created from email domains during triage, or manual |
 | CRM (Pipelines) | **Ready** | Create a pipeline and add contacts to it |
